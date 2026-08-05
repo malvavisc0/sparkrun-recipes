@@ -1,0 +1,37 @@
+model: sakamakismile/KAT-Coder-V2.5-Dev-NVFP4
+runtime: vllm
+container: eugr/spark-vllm:nightly-20260803
+min_nodes: 1
+mods:
+  - mods/fix-qwen3.6-chat-template
+
+metadata:
+  description: KAT-Coder V2.5 Dev 35B A3B agentic coding model (NVFP4)
+  model_params: 35B
+  model_dtype: nvfp4
+  kv_dtype: fp8
+
+defaults:
+  served_model_name: KAT-Coder-V2.5-Dev
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  max_model_len: 262144
+  gpu_memory_utilization: 0.60
+  api_key: dgx10-c18cb51c48521dd10108f1feacdd2360bb26e53201eaec4e
+
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --served-model-name {served_model_name} \
+    --tensor-parallel-size {tensor_parallel} \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --reasoning-parser qwen3 \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_coder \
+    --kv-cache-dtype fp8 \
+    --chat-template fixed_chat_template.jinja \
+    --api-key {api_key} \
+    --trust-remote-code
