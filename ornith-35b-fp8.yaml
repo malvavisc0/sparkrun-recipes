@@ -1,0 +1,35 @@
+model: kyr0/Ornith-35B-FP8-E4M3-MTP
+runtime: vllm
+container: eugr/spark-vllm:nightly-20260803
+min_nodes: 1
+
+metadata:
+  description: Ornith-35B FP8 E4M3 with MTP speculative decoding
+  model_params: 35B
+  model_dtype: fp8
+  kv_dtype: fp8
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  max_model_len: 262144
+  served_model_name: Ornith-35B-FP8
+  gpu_memory_utilization: 0.55
+  speculative_config: '{"method":"mtp","num_speculative_tokens":2}'
+  api_key: dgx10-c18cb51c48521dd10108f1feacdd2360bb26e53201eaec4e
+
+command: |
+  vllm serve {model} \
+    --served-model-name {served_model_name} \
+    --trust-remote-code \
+    --reasoning-parser qwen3 \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_xml \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    -tp {tensor_parallel} \
+    --speculative-config '{speculative_config}' \
+    --api-key {api_key} \
+    --host {host} \
+    --port {port}
