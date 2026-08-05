@@ -11,14 +11,14 @@ metadata:
   kv_dtype: fp8
 
 defaults:
+  served_model_name: Nemotron-3-Nano-Omni-30b-a3b
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 1
   gpu_memory_utilization: 0.70
   max_model_len: 262144
   max_num_seqs: 384
-  served_model_name: Nemotron-3-Nano-Omni-30b-a3b
-  video_pruning_rate: 0.5
+  video_pruning_rate: 0.60
   media_io_kwargs: '{"video": {"fps": 2, "num_frames": 256}}'
   reasoning_parser: nemotron_v3
   tool_call_parser: qwen3_coder

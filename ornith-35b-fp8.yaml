@@ -10,12 +10,12 @@ metadata:
   kv_dtype: fp8
 
 defaults:
+  served_model_name: Ornith-35B-FP8
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 1
   max_model_len: 262144
-  served_model_name: Ornith-35B-FP8
-  gpu_memory_utilization: 0.55
+  gpu_memory_utilization: 0.60
   speculative_config: '{"method":"mtp","num_speculative_tokens":2}'
   api_key: dgx10-c18cb51c48521dd10108f1feacdd2360bb26e53201eaec4e
 
