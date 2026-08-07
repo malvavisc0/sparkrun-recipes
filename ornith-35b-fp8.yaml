@@ -1,6 +1,6 @@
 model: kyr0/Ornith-35B-FP8-E4M3-MTP
 runtime: vllm
-container: eugr/spark-vllm:nightly-20260803
+container: eugr/spark-vllm:nightly-20260807
 min_nodes: 1
 
 metadata:
@@ -17,7 +17,6 @@ defaults:
   max_model_len: 262144
   gpu_memory_utilization: 0.60
   speculative_config: '{"method":"mtp","num_speculative_tokens":2}'
-  api_key: dgx10-c18cb51c48521dd10108f1feacdd2360bb26e53201eaec4e
 
 command: |
   vllm serve {model} \
@@ -30,6 +29,5 @@ command: |
     --gpu-memory-utilization {gpu_memory_utilization} \
     -tp {tensor_parallel} \
     --speculative-config '{speculative_config}' \
-    --api-key {api_key} \
     --host {host} \
     --port {port}

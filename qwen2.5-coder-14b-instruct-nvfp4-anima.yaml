@@ -1,0 +1,38 @@
+model: ilessio-aiflowlab/Qwen2.5-Coder-14B-Instruct-NVFP4-anima
+runtime: vllm
+container: eugr/spark-vllm:nightly-20260807
+min_nodes: 1
+
+metadata:
+  description: Qwen2.5-Coder-14B-Instruct NVFP4 quantization (RobotFlow Labs ANIMA) - autocomplete / FIM completion, Jetson Thor / Blackwell
+  model_params: 14B
+  model_dtype: nvfp4
+  kv_dtype: fp8
+  base_model: Qwen/Qwen2.5-Coder-14B-Instruct
+  license: apache-2.0
+  use_case: autocomplete (fill-in-the-middle completion via /v1/completions)
+  vllm_note: Built for vLLM 0.23 (Jetson Thor). Requires NVFP4 / compressed-tensors support. Qwen2.5-Coder is an instruct model (no thinking mode); no tool/parser flags needed for autocomplete.
+
+defaults:
+  served_model_name: Qwen2.5-Coder-14B-Instruct-NVFP4
+  port: 8100
+  host: 0.0.0.0
+  tensor_parallel: 1
+  max_model_len: 8192
+  max_num_seqs: 128
+  gpu_memory_utilization: 0.20
+  attention_backend: TRITON_ATTN
+  kv_cache_dtype: fp8
+
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --served-model-name {served_model_name} \
+    --tensor-parallel-size {tensor_parallel} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --attention-backend {attention_backend} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --trust-remote-code
