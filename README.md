@@ -112,6 +112,38 @@ Recipes target a 128 GB DGX Spark (unified LPDDR5X). `gpu_memory_utilization` is
 
 When running multiple recipes on the same host, their utilizations must sum to ≤ ~0.88 (leaving headroom for the OS). Override per launch with `-o gpu_memory_utilization=0.3`.
 
+## Benchmark
+
+```bash
+export SPARK_RECIPE='recipe'
+export SPARK_MODEL='model'
+export SPARK_BASE_URL='http://server:9000/v1'
+export SPARK_TOKENIZER='hf-org/hf-model'   # must match the served model's tokenizer
+export LLAMA_API_KEY='api-key'
+mkdir -p ./benchmarks
+uvx llama-benchy \
+      --base-url "$SPARK_BASE_URL" \
+      --api-key "$LLAMA_API_KEY" \
+      --model "$SPARK_MODEL" \
+      --tokenizer Kwaipilot/KAT-Coder-V2.5-Dev \
+      --pp 2048 \
+      --tg 128 \
+      --exact-tg \
+      --depth 0 4096 8192 16384 32768 65535 100000 \
+      --enable-prefix-caching \
+      --concurrency 1 2 5 10 \
+      --latency-mode generation \
+      --exit-on-first-fail \
+      --format csv --save-result ./benchmarks/$SPARK_RECIPE.csv
+```
+
+Then plot it:
+
+```bash
+uvx --with pandas --with matplotlib python scripts/chart_benchy.py \
+  ./benchmarks/$SPARK_RECIPE.csv ./benchmarks/$SPARK_RECIPE.png
+```
+
 ## Notes
 
 - **KAT chat-template mod**: `kat-coder` references `mods/fix-qwen3.6-chat-template`, which resolves via sparkrun's mod lookup (adjacent dir, same registry, or `@eugr` fallback). If it isn't available, `sparkrun run` will fail with the paths it tried.
