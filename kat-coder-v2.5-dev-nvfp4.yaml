@@ -1,6 +1,6 @@
 model: sakamakismile/KAT-Coder-V2.5-Dev-NVFP4
 runtime: vllm
-container: eugr/spark-vllm:nightly-20260807
+container: eugr/spark-vllm:nightly-20260808
 min_nodes: 1
 
 metadata:
@@ -15,9 +15,9 @@ defaults:
   host: 0.0.0.0
   tensor_parallel: 1
   max_model_len: 262144
-  max_num_seqs: 4
+  max_num_seqs: 64
   max_num_batched_tokens: 32768
-  gpu_memory_utilization: 0.65
+  gpu_memory_utilization: 0.80
 
 command: |
   vllm serve {model} \
@@ -40,4 +40,5 @@ command: |
     --enable-prefix-caching \
     --load-format fastsafetensors \
     --language-model-only \
-    --trust-remote-code
+    --default-chat-template-kwargs '{"preserve_thinking": true}' \
+    --override-generation-config '{"temperature":0.7,"top_p":0.8,"top_k":20,"presence_penalty":1.5}'
