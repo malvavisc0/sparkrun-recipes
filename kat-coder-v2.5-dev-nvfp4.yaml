@@ -4,7 +4,7 @@ container: eugr/spark-vllm:nightly-20260808
 min_nodes: 1
 
 metadata:
-  description: KAT-Coder V2.5 Dev 35B A3B agentic coding model (NVFP4)
+  description: KAT-Coder V2.5 Dev 35B-A3B NVFP4
   model_params: 35B
   model_dtype: nvfp4
   kv_dtype: fp8
@@ -15,9 +15,9 @@ defaults:
   host: 0.0.0.0
   tensor_parallel: 1
   max_model_len: 262144
-  max_num_seqs: 64
+  max_num_seqs: 4
   max_num_batched_tokens: 32768
-  gpu_memory_utilization: 0.80
+  gpu_memory_utilization: 0.70
 
 command: |
   vllm serve {model} \
@@ -29,16 +29,16 @@ command: |
     --max-num-seqs {max_num_seqs} \
     --max-num-batched-tokens {max_num_batched_tokens} \
     --gpu-memory-utilization {gpu_memory_utilization} \
-    --reasoning-parser qwen3 \
-    --enable-auto-tool-choice \
-    --tool-call-parser qwen3_coder \
+    --trust-remote-code \
     --kv-cache-dtype fp8 \
-    --attention-backend flashinfer \
-    --moe-backend flashinfer_b12x \
+    --attention-backend auto \
+    --moe-backend auto \
     --enable-chunked-prefill \
     --async-scheduling \
     --enable-prefix-caching \
     --load-format fastsafetensors \
-    --language-model-only \
-    --default-chat-template-kwargs '{"preserve_thinking": true, "enable_thinking": true}' \
-    --override-generation-config '{"temperature":0.6, "top_p":0.95, "top_k":20, "min_p": 0.0, "repetition_penalty":1.05, "presence_penalty": 0.0}'
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --enable-auto-tool-choice \
+    --default-chat-template-kwargs '{"enable_thinking": true, "preserve_thinking": true}' \
+    --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.05,"presence_penalty":0.0}'

@@ -32,18 +32,18 @@ uvx --with pandas --with matplotlib python scripts/chart_benchy.py \
 
 | Depth | pp t/s | tg t/s | ttfr (ms) |
 |---:|---:|---:|---:|
-| 0 | 6 695 | 70 | 363 |
-| 4 096 | 3 134 | 68 | 704 |
-| 8 192 | 3 188 | 67 | 692 |
-| 16 384 | 2 693 | 66 | 813 |
-| 32 768 | 2 201 | 63 | 983 |
-| 65 535 | 1 798 | 57 | 1 194 |
-| 100 000 | 1 115 | 53 | 1 887 |
+| 0 | 7 660 | 66 | 354 |
+| 4 096 | 3 684 | 65 | 637 |
+| 8 192 | 3 442 | 64 | 676 |
+| 16 384 | 2 928 | 63 | 781 |
+| 32 768 | 2 268 | 60 | 988 |
+| 65 535 | 1 896 | 56 | 1 162 |
+| 100 000 | 1 150 | 51 | 1 863 |
 
 ### Real-life expectations
 
-- **~52–70 tokens/s** sustained generation per interactive coding session (drops with context depth).
-- **Sub-second prefill** for prompts up to ~8k context; ~700 ms ttfr at 8k, rising to ~1.9 s at 100k.
-- Concurrency > 1 grows total throughput but drops per-request speed — **stay at c=1 for interactive coding**. Scale users by adding replicas, not by raising concurrency on one process.
+- **~51–66 tokens/s** sustained generation per interactive coding session (drops with context depth). Thinking mode is on by default, so visible-output latency is higher than raw ttfr suggests — reasoning tokens precede the first user-visible token.
+- **Sub-second prefill** for prompts up to ~32k context; ~680 ms ttfr at 8k, rising to ~1.9 s at 100k.
+- Concurrency > 1 now degrades aggregate throughput sharply under thinking mode (prefill collapses ~50–70% at c5/c10) — **stay at c=1 for interactive coding**. Scale users by adding replicas, not by raising concurrency on one process.
 
 See the project [README](../README.md) for the exact `llama-benchy` command used to produce these numbers.
