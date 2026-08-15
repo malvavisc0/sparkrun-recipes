@@ -1,45 +1,63 @@
-model: unsloth/Qwen3.8-27B-NVFP4
-runtime: vllm
-container: eugr/spark-vllm:nightly-20260814
+model: RadixArk/Qwen3.8-27B-NVFP4
+runtime: sglang
+container: lmsysorg/sglang:qwen38-27b
 min_nodes: 1
 
 metadata:
-  description: Qwen3.8 27B NVFP4 (Unsloth Dynamic V3.0, FP8 attention + MTP)
+  description: Qwen3.8 27B NVFP4 (W4A4 + FP8 projections, ~16.5GB weights) via SGLang
   model_params: 27B
   model_dtype: nvfp4
-  kv_dtype: fp8
+  kv_dtype: fp8_e4m3
 
 defaults:
-  served_model_name: Qwen3.8-27B
+  served_model_name: qwen3.8-27b-sglang
   port: 9000
   host: 0.0.0.0
   tensor_parallel: 1
   max_model_len: 262144
-  max_num_seqs: 4
-  max_num_batched_tokens: 32768
-  gpu_memory_utilization: 0.80
-  load_format: fastsafetensors
+  max_running_requests: 10
+  mem_fraction_static: 0.95
+  attention_backend: flashinfer
+  chunked_prefill_size: 8192
+  kv_cache_dtype: fp8_e4m3
+  mamba_ssm_dtype: bfloat16
+  mamba_full_memory_ratio: 4.21
+  mamba_radix_cache_strategy: extra_buffer_lazy
+  mamba_slots_per_req: 8
+  speculative_algorithm: EAGLE
+  speculative_num_steps: 3
+  speculative_eagle_topk: 1
+  speculative_num_draft_tokens: 4
+  reasoning_parser: qwen3
+  tool_call_parser: qwen3_coder
 
 command: |
-  vllm serve {model} \
+  python3 -m sglang.launch_server \
+    --model-path {model} \
+    --served-model-name {served_model_name} \
     --host {host} \
     --port {port} \
-    --served-model-name {served_model_name} \
-    --tensor-parallel-size {tensor_parallel} \
-    --max-model-len {max_model_len} \
-    --max-num-seqs {max_num_seqs} \
-    --max-num-batched-tokens {max_num_batched_tokens} \
-    --gpu-memory-utilization {gpu_memory_utilization} \
+    --tp {tensor_parallel} \
+    --context-length {max_model_len} \
     --trust-remote-code \
-    --kv-cache-dtype fp8 \
-    --attention-backend auto \
-    --enable-chunked-prefill \
-    --async-scheduling \
-    --enable-prefix-caching \
-    --load-format {load_format} \
-    --reasoning-parser qwen3 \
-    --tool-call-parser qwen3_coder \
-    --enable-auto-tool-choice \
-    --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
+    --mem-fraction-static {mem_fraction_static} \
+    --attention-backend {attention_backend} \
+    --chunked-prefill-size {chunked_prefill_size} \
+    --disable-prefill-cuda-graph \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --mamba-ssm-dtype {mamba_ssm_dtype} \
+    --mamba-full-memory-ratio {mamba_full_memory_ratio} \
+    --mamba-radix-cache-strategy {mamba_radix_cache_strategy} \
+    --max-mamba-cache-size $(({max_running_requests} * {mamba_slots_per_req})) \
+    --max-running-requests {max_running_requests} \
+    --speculative-algorithm {speculative_algorithm} \
+    --speculative-num-steps {speculative_num_steps} \
+    --speculative-eagle-topk {speculative_eagle_topk} \
+    --speculative-num-draft-tokens {speculative_num_draft_tokens} \
+    --reasoning-parser {reasoning_parser} \
+    --tool-call-parser {tool_call_parser} \
+    --sampling-defaults model \
     --default-chat-template-kwargs '{"enable_thinking": true, "preserve_thinking": true}' \
-    --override-generation-config '{"temperature":0.65,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.05,"presence_penalty":0.5}'
+    --preferred-sampling-params '{"temperature":0.65,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.05,"presence_penalty":0.5}' \
+    --enable-metrics \
+    --api-key "$SGLANG_API_KEY"
