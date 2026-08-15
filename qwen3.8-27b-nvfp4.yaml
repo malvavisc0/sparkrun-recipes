@@ -16,7 +16,7 @@ defaults:
   tensor_parallel: 1
   max_model_len: 262144
   max_running_requests: 10
-  mem_fraction_static: 0.95
+  mem_fraction_static: 0.85
   attention_backend: flashinfer
   chunked_prefill_size: 8192
   kv_cache_dtype: fp8_e4m3
