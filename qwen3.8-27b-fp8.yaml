@@ -1,0 +1,45 @@
+model: Qwen/Qwen3.8-27B-FP8
+runtime: vllm
+container: eugr/spark-vllm:nightly-20260814
+min_nodes: 1
+
+metadata:
+  description: Qwen3.8 27B FP8 (dense hybrid-attention, vision-language)
+  model_params: 27B
+  model_dtype: fp8
+  kv_dtype: fp8
+
+defaults:
+  served_model_name: Qwen3.8-27B
+  port: 9000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  max_model_len: 262144
+  max_num_seqs: 4
+  max_num_batched_tokens: 32768
+  gpu_memory_utilization: 0.80
+  load_format: fastsafetensors
+
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --served-model-name {served_model_name} \
+    --tensor-parallel-size {tensor_parallel} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --attention-backend auto \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --load-format {load_format} \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --enable-auto-tool-choice \
+    --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
+    --default-chat-template-kwargs '{"enable_thinking": true, "preserve_thinking": true}' \
+    --override-generation-config '{"temperature":0.65,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.05,"presence_penalty":0.5}'
