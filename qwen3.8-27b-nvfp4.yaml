@@ -14,15 +14,28 @@ defaults:
   port: 9000
   host: 0.0.0.0
   tensor_parallel: 1
+  # Native context; we do not extend beyond this (no YaRN).
   max_model_len: 262144
   max_running_requests: 10
+  # Cookbook DGX Spark cell uses 0.95, but that was unstable in practice on
+  # unified memory (OS starvation); 0.85 is the tested stable value.
   mem_fraction_static: 0.85
   attention_backend: flashinfer
+  # DGX Spark is the cookbook's documented exception to the 2048-token
+  # chunked-prefill guidance for hybrid GDN models.
   chunked_prefill_size: 8192
+  # Explicit fp8 KV. The NVFP4 checkpoint declares kv_cache_quant_algo: FP8,
+  # so `auto` would resolve to the same dtype with the checkpoint's scales.
   kv_cache_dtype: fp8_e4m3
+  # bf16 state slots (78.4MB) instead of the fp32 default (153.9MB/slot).
   mamba_ssm_dtype: bfloat16
+  # ratio = (S+D) x state_bytes / (L x kv_bytes_per_token)
+  #       = 8 x 78.4MB / (L x 32.8KB) -> 4.21 for L ~= 4.5K avg tokens.
+  # --max-mamba-cache-size below pins the pool and overrides this ratio.
   mamba_full_memory_ratio: 4.21
+  # extra_buffer_lazy: S=4 state slots per request at no accuracy cost.
   mamba_radix_cache_strategy: extra_buffer_lazy
+  # S + D = 4 (extra_buffer_lazy) + 4 (EAGLE draft tokens) = 8 slots/request.
   mamba_slots_per_req: 8
   speculative_algorithm: EAGLE
   speculative_num_steps: 3
