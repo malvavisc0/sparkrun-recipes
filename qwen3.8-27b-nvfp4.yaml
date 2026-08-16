@@ -10,7 +10,7 @@ metadata:
   kv_dtype: fp8_e4m3
 
 defaults:
-  served_model_name: qwen3.8-27b-sglang
+  served_model_name: Qwen3.8-27B
   port: 9000
   host: 0.0.0.0
   tensor_parallel: 1
