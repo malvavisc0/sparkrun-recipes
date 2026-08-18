@@ -1,50 +1,171 @@
+# Qwen3.8-27B NVFP4 deployment for a single NVIDIA DGX Spark.
+#
+# This profile uses:
+#   - NVFP4 target-model weights
+#   - FP8 E4M3 KV cache
+#   - FP32 Mamba/GDN recurrent state
+#   - External DSpark speculative drafter
+#   - FlashInfer attention
+#
+# IMPORTANT:
+# Pin the model revisions and container digest before treating this as a
+# reproducible production recipe. Repository names and image tags are mutable.
+
 model: RadixArk/Qwen3.8-27B-NVFP4
 runtime: sglang
+
+# Cookbook image with Qwen3.8 support.
+# For production, replace this mutable tag with an immutable image digest:
+#   lmsysorg/sglang@sha256:<digest>
 container: lmsysorg/sglang:qwen38-27b
+
+# This recipe assumes one DGX Spark node and tensor parallelism of one.
 min_nodes: 1
 
 metadata:
-  description: Qwen3.8 27B NVFP4 (W4A4 + FP8 projections, ~16.5GB weights) via SGLang
+  description: Qwen3.8 27B NVFP4 with FP8 KV cache and DSpark speculative decoding via SGLang
   model_params: 27B
   model_dtype: nvfp4
   kv_dtype: fp8_e4m3
+  target_hardware: NVIDIA DGX Spark
+
+  # Operational assumptions used while tuning this profile.
+  # Revalidate these whenever the model, drafter, container, or workload changes.
+  tested_concurrency: 10
+  tested_mem_fraction_static: 0.90
+
+  # Add immutable revisions when supported by the surrounding recipe runner:
+  # model_revision: "<target-model commit SHA>"
+  # draft_model_revision: "<draft-model commit SHA>"
+  # container_digest: "sha256:<digest>"
 
 defaults:
+  # Name exposed through the OpenAI-compatible API.
   served_model_name: Qwen3.8-27B
-  port: 9000
+
+  # The server listens on every interface. Keep API authentication enabled and
+  # restrict external access with host/container firewall rules where possible.
   host: 0.0.0.0
+  port: 9000
+
+  # One GPU/unified-memory device on DGX Spark.
+  # Do not increase TP without confirming architecture and backend support.
   tensor_parallel: 1
-  # Native context; we do not extend beyond this (no YaRN).
+
+  # Native model context. This recipe does not enable YaRN or another extension.
+  #
+  # This is a per-request model ceiling, not a promise that ten simultaneous
+  # requests can each hold 262K tokens. KV cache, recurrent state, the target
+  # model, and the DSpark drafter all share available memory.
   max_model_len: 262144
+
+  # Maximum number of requests allowed to execute concurrently.
+  # Queueing may occur above this limit. Re-test after changing state precision,
+  # memory fraction, cache sizing, draft model, or average request length.
   max_running_requests: 10
-  # Cookbook DGX Spark cell uses 0.95, but that was unstable in practice on
-  # unified memory (OS starvation); 0.85 is the tested stable value.
-  mem_fraction_static: 0.85
+
+  # The DSpark measured-optimum stack (README 2026-08-18) uses mem 0.90:
+  # the larger KV pool matters for decode tok/s. 0.95 (MTP path) starves
+  # unified memory/OS on the DSpark path because the external draft model
+  # adds ~2.7 GB on top of the target weights.
+  #
+  # Do not raise this only because startup succeeds; test long prompts and mixed
+  # concurrent traffic while monitoring swap activity and host memory pressure.
+  mem_fraction_static: 0.90
+
+  # FlashInfer is used for the target model's attention kernels.
   attention_backend: flashinfer
-  # DGX Spark is the cookbook's documented exception to the 2048-token
-  # chunked-prefill guidance for hybrid GDN models.
+
+  # The general SGLang recommendation for hybrid GDN models is commonly 2048,
+  # because large prefill chunks can stall active decode requests. DGX Spark is
+  # a documented exception where 8192 is used by the cookbook.
+  #
+  # For non-Spark hardware, start at 2048 and benchmark TTFT and inter-token
+  # latency before adopting this value.
   chunked_prefill_size: 8192
-  # Explicit fp8 KV. The NVFP4 checkpoint declares kv_cache_quant_algo: FP8,
-  # so `auto` would resolve to the same dtype with the checkpoint's scales.
+
+  # Explicit FP8 KV-cache precision. Keep this independent from the NVFP4 weight
+  # format: weight precision and KV-cache precision are separate settings.
+  #
+  # The target checkpoint is expected to provide the required FP8 cache scales.
+  # Confirm from startup logs that SGLang loads those scales successfully.
   kv_cache_dtype: fp8_e4m3
-  # bf16 state slots (78.4MB) instead of the fp32 default (153.9MB/slot).
+
+  # BF16 recurrent state. The DSpark measured-optimum stack uses GDN bf16;
+  # FP32 GDN was measured ~3% slower on this box (README "Notable serving
+  # choices"). BF16 also halves the per-slot state footprint (78.4 MB/slot
+  # vs 153.9 MB at fp32), which is what makes mem-fraction 0.90 viable.
+  #
+  # If you revert to FP32, recalculate the Mamba pool sizing below and lower
+  # mem_fraction_static accordingly.
   mamba_ssm_dtype: bfloat16
-  # ratio = (S+D) x state_bytes / (L x kv_bytes_per_token)
-  #       = 8 x 78.4MB / (L x 32.8KB) -> 4.21 for L ~= 4.5K avg tokens.
-  # --max-mamba-cache-size below pins the pool and overrides this ratio.
-  mamba_full_memory_ratio: 4.21
-  # extra_buffer_lazy: S=4 state slots per request at no accuracy cost.
+
+  # Explicit GDN state-pool size instead of a memory ratio. The DSpark stack
+  # with extra_buffer_lazy + the overlap scheduler uses S=4 state slots per
+  # request (verified in this build's kv_cache_configurator.py; the spec-verify
+  # window is a separate engine-side buffer, so do NOT fold draft tokens into
+  # this number). max_mamba_cache_size = max_running_requests × 4 = 40.
+  #
+  # The ratio-based default (0.9) over-provisions the Mamba pool and silently
+  # clamps concurrency below max_running_requests. Pinning the slot count
+  # avoids that and frees the rest of memory for the paged KV pool.
+  max_mamba_cache_size: 40
+
+  # Lazily maintains extra recurrent-state buffers for radix-cache scheduling.
+  # Keep this synchronized with any future manual Mamba-cache-size calculation.
   mamba_radix_cache_strategy: extra_buffer_lazy
-  # S + D = 4 (extra_buffer_lazy) + 4 (EAGLE draft tokens) = 8 slots/request.
-  mamba_slots_per_req: 8
-  speculative_algorithm: EAGLE
-  speculative_num_steps: 3
-  speculative_eagle_topk: 1
-  speculative_num_draft_tokens: 4
+
+  # External DSpark speculative decoding. This is different from EAGLE/MTP.
+  # Do not copy EAGLE-only flags such as --speculative-eagle-topk into this
+  # profile unless the pinned SGLang version explicitly documents them for
+  # DSpark.
+  speculative_algorithm: DSPARK
+
+  # External draft model trained for this target-model family.
+  # Pin its repository revision alongside the target model for reproducibility.
+  speculative_draft_model_path: RadixArk/Qwen3.8-27B-DSpark
+
+  # Attention implementation used by the external draft model.
+  speculative_draft_attention_backend: flashinfer
+
+  # DSpark block size. Block-7 is the measured code/chat peak on GB10
+  # (README). Block-5 trades ~16% code for ~8% prose if you optimize for
+  # long-form writing instead.
+  speculative_dspark_block_size: 7
+
+  # Number of draft tokens = gamma + 1. The DSpark stack pins this to 8
+  # (overrides the MTP default of 4).
+  speculative_num_draft_tokens: 8
+
+  # Unquantized (bf16) draft model. The DSpark draft was trained on FP8,
+  # but FP8 quantizing the draft did not lift acceptance on this box.
+  speculative_draft_model_quantization: unquant
+
+  # torch.compile + decode CUDA-graph cap, paired with the DSpark stack.
+  # Caps match the measured-optimum config (small batch decode only).
+  enable_torch_compile: true
+  torch_compile_max_bs: 4
+  cuda_graph_max_bs_decode: 4
+
+  # Two continuous decode steps per scheduler iteration — part of the
+  # DSpark measured-optimum stack.
+  num_continuous_decode_steps: 2
+
+  # Parsers must match the output formats produced by this model/template.
+  # Re-test both after updating the model, tokenizer, chat template, or SGLang.
   reasoning_parser: qwen3
   tool_call_parser: qwen3_coder
+  
+  # Work around SGLang multimodal CUDA-IPC failures in restricted containers.
+  mm_feature_transport: cpu
+
+  # Qwen3.8 defaults to xhigh. Medium provides a better general-purpose balance
+  # between reasoning quality, latency, and generated-token cost.
+  reasoning_effort: medium
 
 command: |
+  : "${SGLANG_API_KEY:?SGLANG_API_KEY must be set}"
+
   python3 -m sglang.launch_server \
     --model-path {model} \
     --served-model-name {served_model_name} \
@@ -59,18 +180,23 @@ command: |
     --disable-prefill-cuda-graph \
     --kv-cache-dtype {kv_cache_dtype} \
     --mamba-ssm-dtype {mamba_ssm_dtype} \
-    --mamba-full-memory-ratio {mamba_full_memory_ratio} \
+    --max-mamba-cache-size {max_mamba_cache_size} \
     --mamba-radix-cache-strategy {mamba_radix_cache_strategy} \
-    --max-mamba-cache-size $(({max_running_requests} * {mamba_slots_per_req})) \
     --max-running-requests {max_running_requests} \
     --speculative-algorithm {speculative_algorithm} \
-    --speculative-num-steps {speculative_num_steps} \
-    --speculative-eagle-topk {speculative_eagle_topk} \
+    --speculative-draft-model-path {speculative_draft_model_path} \
+    --speculative-draft-attention-backend {speculative_draft_attention_backend} \
+    --speculative-dspark-block-size {speculative_dspark_block_size} \
     --speculative-num-draft-tokens {speculative_num_draft_tokens} \
+    --speculative-draft-model-quantization {speculative_draft_model_quantization} \
+    --enable-torch-compile --torch-compile-max-bs {torch_compile_max_bs} \
+    --cuda-graph-max-bs-decode {cuda_graph_max_bs_decode} \
+    --num-continuous-decode-steps {num_continuous_decode_steps} \
     --reasoning-parser {reasoning_parser} \
     --tool-call-parser {tool_call_parser} \
     --sampling-defaults model \
-    --default-chat-template-kwargs '{"enable_thinking": true, "preserve_thinking": true}' \
-    --preferred-sampling-params '{"temperature":0.65,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.05,"presence_penalty":0.5}' \
+    --default-chat-template-kwargs '{"enable_thinking":true,"preserve_thinking":true,"reasoning_effort":"{reasoning_effort}"}' \
+    --preferred-sampling-params '{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0,"presence_penalty":0.0,"frequency_penalty":0.0}' \
     --enable-metrics \
+    --mm-feature-transport {mm_feature_transport} \
     --api-key "$SGLANG_API_KEY"
