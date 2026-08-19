@@ -76,13 +76,12 @@ defaults:
   # FlashInfer is used for the target model's attention kernels.
   attention_backend: flashinfer
 
-  # The general SGLang recommendation for hybrid GDN models is commonly 2048,
-  # because large prefill chunks can stall active decode requests. DGX Spark is
-  # a documented exception where 8192 is used by the cookbook.
-  #
-  # For non-Spark hardware, start at 2048 and benchmark TTFT and inter-token
-  # latency before adopting this value.
-  chunked_prefill_size: 8192
+  # Official SGLang cookbook (Config Tips): on hybrid GDN models, decode steps
+  # stall behind each prefill chunk — 8192-token chunks stall them ~600ms at a
+  # time, while 2048 keeps decode inter-token latency smooth under mixed load
+  # and improves single-wave TTFT. The verified DGX Spark cell uses 2048.
+  # (The earlier 8192 here came from a prefill-throughput-optimized config.)
+  chunked_prefill_size: 2048
 
   # Explicit FP8 KV-cache precision. Keep this independent from the NVFP4 weight
   # format: weight precision and KV-cache precision are separate settings.
@@ -130,12 +129,10 @@ defaults:
 
   # DSpark block size. Block-7 is the measured code/chat peak on GB10
   # (README). Block-5 trades ~16% code for ~8% prose if you optimize for
-  # long-form writing instead.
+  # long-form writing instead. Per the official cookbook, DSpark derives its
+  # verify window as block_size + 1 (= 8 here) and ignores
+  # --speculative-num-draft-tokens, so no separate draft-token flag is set.
   speculative_dspark_block_size: 7
-
-  # Number of draft tokens = gamma + 1. The DSpark stack pins this to 8
-  # (overrides the MTP default of 4).
-  speculative_num_draft_tokens: 8
 
   # Unquantized (bf16) draft model. The DSpark draft was trained on FP8,
   # but FP8 quantizing the draft did not lift acceptance on this box.
@@ -177,7 +174,6 @@ command: |
     --mem-fraction-static {mem_fraction_static} \
     --attention-backend {attention_backend} \
     --chunked-prefill-size {chunked_prefill_size} \
-    --disable-prefill-cuda-graph \
     --kv-cache-dtype {kv_cache_dtype} \
     --mamba-ssm-dtype {mamba_ssm_dtype} \
     --max-mamba-cache-size {max_mamba_cache_size} \
@@ -187,7 +183,6 @@ command: |
     --speculative-draft-model-path {speculative_draft_model_path} \
     --speculative-draft-attention-backend {speculative_draft_attention_backend} \
     --speculative-dspark-block-size {speculative_dspark_block_size} \
-    --speculative-num-draft-tokens {speculative_num_draft_tokens} \
     --speculative-draft-model-quantization {speculative_draft_model_quantization} \
     --enable-torch-compile --torch-compile-max-bs {torch_compile_max_bs} \
     --cuda-graph-max-bs-decode {cuda_graph_max_bs_decode} \
