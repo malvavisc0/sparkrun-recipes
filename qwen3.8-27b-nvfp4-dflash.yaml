@@ -199,7 +199,7 @@ defaults:
   # a throughput one. xhigh is likely past diminishing returns; medium was
   # the previous general-purpose compromise. Override with
   # -o reasoning_effort=medium for latency-sensitive interactive use.
-  reasoning_effort: high
+  reasoning_effort: medium
 
 command: |
   : "${SGLANG_API_KEY:?SGLANG_API_KEY must be set}"
