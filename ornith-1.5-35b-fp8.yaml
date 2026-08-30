@@ -1,0 +1,64 @@
+# Ornith-1.5-35B-A3B FP8 (qwen3_5_moe) — image-capable agentic-coding MoE with MTP.
+#
+# This profile uses:
+#   - FP8 E4M3 weights (compressed-tensors; visual.* and mtp.* kept bf16)
+#   - FP8 KV cache (dynamic scaling; checkpoint ships no FP8 KV scales)
+#   - MTP speculative decoding (mtp_num_hidden_layers=1, 2 draft tokens)
+#   - Image input only (video disabled via --limit-mm-per-prompt)
+#
+# IMPORTANT:
+# - Combining MTP speculative decoding with Qwen3VL multimodal input on qwen3_5_moe
+#   is not exercised by the model card. Boot and test an image request before
+#   trusting it; see fallback ladder in the repo plan / README notes.
+# - Pin the model revision and container digest before treating this as a
+#   reproducible production recipe. Repository names and image tags are mutable.
+
+model: ornith-ai/Ornith-1.5-35B-A3B-FP8
+runtime: vllm
+container: eugr/spark-vllm:nightly-20260820
+min_nodes: 1
+
+metadata:
+  description: Ornith-1.5 35B-A3B FP8 (qwen3_5_moe, image + MTP) via vLLM
+  model_params: 36B
+  model_dtype: fp8
+  kv_dtype: fp8
+
+defaults:
+  served_model_name: Ornith-1.5-35B-A3B
+  port: 9000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  max_model_len: 262144
+  max_num_seqs: 4
+  max_num_batched_tokens: 32768
+  gpu_memory_utilization: 0.85
+  load_format: fastsafetensors
+  limit_mm_per_prompt: '{"image": 4, "video": 0}'
+  num_speculative_tokens: 2
+
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --served-model-name {served_model_name} \
+    --tensor-parallel-size {tensor_parallel} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --attention-backend auto \
+    --moe-backend auto \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --load-format {load_format} \
+    --limit-mm-per-prompt '{limit_mm_per_prompt}' \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_xml \
+    --enable-auto-tool-choice \
+    --speculative-config '{"method":"mtp","num_speculative_tokens":{num_speculative_tokens}}' \
+    --default-chat-template-kwargs '{"enable_thinking": true, "preserve_thinking": true}' \
+    --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20}'

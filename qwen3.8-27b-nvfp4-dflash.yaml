@@ -1,0 +1,258 @@
+# Qwen3.8-27B NVFP4 deployment for a single NVIDIA DGX Spark — DFlash 2 variant.
+#
+# This profile uses:
+#   - NVFP4 target-model weights
+#   - FP8 E4M3 KV cache
+#   - BF16 Mamba/GDN recurrent state
+#   - External DFlash 2 (block-diffusion) speculative drafter
+#   - FlashInfer attention
+#
+# A/B variant of qwen3.8-27b-nvfp4.yaml (which uses DSpark). DFlash 2 publishes
+# ~1.3-1.4x higher code throughput than DSpark on Qwen3.8-27B (HumanEval 214.6
+# vs 159.9 tok/s; MBPP 226.9 vs 163.3) at block size 8.
+#
+# VALIDATED on GB10/SM121 + FlashInfer (2026-08-30, nightly a1fe4e30):
+# 67.3 tok/s single-stream decode; 321 tok/s aggregate at C10 (33-36 tok/s per
+# request, TTFT <0.3s); at or above the published DGX Spark reference band.
+# - The published DFlash 2 numbers are H200/SM90 + FlashAttention 3; this
+#   box's numbers were measured locally (see per-knob MEASURED notes below).
+# - The drafter was trained against bf16 Qwen/Qwen3.8-27B; this recipe runs the
+#   NVFP4 target, so acceptance length may differ from the published numbers.
+# - Pin the model revisions and container digest before treating this as a
+#   reproducible production recipe. Repository names and image tags are mutable.
+
+model: RadixArk/Qwen3.8-27B-NVFP4
+runtime: sglang
+
+# Nightly build (2026-08-30, commit a1fe4e30). Includes the qwen3.8 rebase
+# (GDN FlashInfer alignment fixes, DFlash worker fixes), KV-pool sizing fixes
+# that account for resident weight memory, and a server_args refactor — diff
+# `launch_server --help` against the previous nightly (20260821-f825d729,
+# known-good DFlash2 fallback) if a flag misbehaves.
+# For production, replace this mutable tag with an immutable image digest:
+#   lmsysorg/sglang@sha256:<digest>
+container: lmsysorg/sglang:nightly-dev-20260830-a1fe4e30
+
+# This recipe assumes one DGX Spark node and tensor parallelism of one.
+min_nodes: 1
+
+metadata:
+  description: Qwen3.8 27B NVFP4 with FP8 KV cache and DFlash 2 (block-diffusion) speculative decoding via SGLang
+  model_params: 27B
+  model_dtype: nvfp4
+  kv_dtype: fp8_e4m3
+  target_hardware: NVIDIA DGX Spark
+
+  # Operational assumptions used while tuning this profile.
+  # Revalidate these whenever the model, drafter, container, or workload changes.
+  tested_concurrency: 10
+  tested_mem_fraction_static: 0.70
+
+  # Add immutable revisions when supported by the surrounding recipe runner:
+  # model_revision: "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854"  # RadixArk/Qwen3.8-27B-NVFP4 (measured reference pin)
+  # draft_model_revision: "50307d4c4cde6860d4eee73e2547cd786fe8e8a4"  # z-lab/Qwen3.8-27B-DFlash2 (measured reference pin)
+  # container_digest: "sha256:<digest>"
+
+defaults:
+  # Name exposed through the OpenAI-compatible API.
+  served_model_name: Qwen3.8-27B
+
+  # The server listens on every interface. Keep API authentication enabled and
+  # restrict external access with host/container firewall rules where possible.
+  host: 0.0.0.0
+  port: 9000
+
+  # One GPU/unified-memory device on DGX Spark.
+  # Do not increase TP without confirming architecture and backend support.
+  tensor_parallel: 1
+
+  # Native model context. This recipe does not enable YaRN or another extension.
+  max_model_len: 262144
+
+  # Maximum number of requests allowed to execute concurrently.
+  max_running_requests: 10
+
+  # The measured DGX Spark DFlash2 profile (target 52d1adc5, draft 50307d4c)
+  # boots at 0.70 with ~31 GB unified-memory headroom after weight load, KV
+  # alloc, and CUDA-graph capture. The previous 0.90 was inherited from the
+  # DSpark sibling and never validated for DFlash; 0.90 ≈ 115 GB reserved on
+  # 128 GB unified memory and risks OOM under long prompts or mixed load.
+  #
+  # Speed note: a larger KV pool improves radix-cache hit rates, so once a
+  # cold boot + long-context + C10 test passes, bisect upward
+  # (0.75/0.80/0.85) and keep the highest value that leaves healthy headroom
+  # and no swap.
+  mem_fraction_static: 0.70
+
+  # FlashInfer is used for the target model's attention kernels.
+  attention_backend: flashinfer
+
+  # Official SGLang cookbook (Config Tips): 2048 keeps decode inter-token
+  # latency smooth under mixed load on hybrid GDN models (8192-token chunks
+  # stall decode ~600ms at a time). The measured DFlash2 reference uses 8192.
+  #
+  # MEASURED on this box (2026-08-30, nightly a1fe4e30, fixed-256 decode,
+  # T=0, short coding prompts): 2048 beat 8192 by ~2-3% decode tok/s at every
+  # concurrency C1-C10 with slightly better TTFT. Keep 2048. Revisit only for
+  # long-prompt workloads (8K+ context), where 8192's prefill throughput
+  # advantage was not exercised by that bench.
+  chunked_prefill_size: 2048
+
+  # Explicit FP8 KV-cache precision.
+  kv_cache_dtype: fp8_e4m3
+
+  # BF16 recurrent state (matches the DSpark variant). The checkpoint ships its
+  # SSM state as float32; overriding to bf16 is safe and halves the per-slot
+  # footprint, but logs a state-drift warning at boot per the SGLang cookbook —
+  # that line is expected, not an error.
+  mamba_ssm_dtype: bfloat16
+
+  # Explicit GDN state-pool pin: max_running_requests x S = 10 x 5 = 50.
+  # This recipe uses the extra_buffer strategy with the overlap scheduler, so
+  # S=5 state slots per request (verified in this build's
+  # kv_cache_configurator.py). The DSpark sibling uses extra_buffer_lazy, which
+  # is S=4 — the S difference comes from strategy, NOT from DFLASH vs DSPARK
+  # (neither algorithm pins a strategy; DFLASH supports extra_buffer_lazy too).
+  # extra_buffer here is a low-latency choice, not a DFLASH requirement. The
+  # spec-verify window is a separate engine-side buffer, so draft tokens are
+  # NOT folded into this number.
+  #
+  # The measured DFlash2 reference additionally sets
+  # --mamba-full-memory-ratio 4.21 alongside the same size pin. The semantics
+  # (base pool vs cap) are unverified in this build — confirm in the pinned
+  # image's --help / kv_cache_configurator.py before adopting.
+  max_mamba_cache_size: 50
+
+  # extra_buffer (non-lazy) radix-cache strategy → S=5 slots (see above).
+  # Keep this synchronized with the max_mamba_cache_size calculation.
+  mamba_radix_cache_strategy: extra_buffer
+
+  # DFlash 2 block-diffusion speculative decoding. Supported in this pinned
+  # image (SpeculativeAlgorithm.DFLASH).
+  speculative_algorithm: DFLASH
+
+  # Canonical DFlash 2 drafter for Qwen3.8-27B. BF16, ~2B params.
+  # The measured reference profile treats z-lab/Qwen3.8-27B-DFlash2 as the
+  # primary (incoai/… as a mirror); this recipe uses incoai. When pinning
+  # revisions, switch to z-lab and pin 50307d4c4cde6860d4eee73e2547cd786fe8e8a4
+  # for parity with the measured profile — do not pin a z-lab SHA against the
+  # incoai repo without verifying it resolves there.
+  speculative_draft_model_path: incoai/Qwen3.8-27B-DFlash2
+
+  # Attention implementation used by the external draft model.
+  speculative_draft_attention_backend: flashinfer
+
+  # DFlash verify window / block size. The published recipe uses 8 (7 draft
+  # tokens + 1 verify per step). --speculative-num-draft-tokens sets the verify
+  # window; --speculative-dflash-block-size is a DFLASH-only knob that coerces
+  # into it one-way at runtime (block_size -> num_draft_tokens), not a CLI
+  # alias in the other direction. We pin num_draft_tokens directly. For
+  # reference, DSpark derives its window as block_size + 1 (= 8 here) and
+  # ignores --speculative-num-draft-tokens.
+  speculative_num_draft_tokens: 8
+
+  # Unquantized (bf16) draft model.
+  speculative_draft_model_quantization: unquant
+
+  # Decode CUDA-graph cap. The previous value of 4 (inherited from the DSpark
+  # sibling) meant decode batches above bs 4 fell out of graph capture into
+  # eager execution — with max_running_requests 10, every decode step at
+  # concurrency 5-10 ran uncaptured. 10 matches this recipe's concurrency
+  # ceiling; the extra capture memory is affordable at mem_fraction_static
+  # 0.70 (was not at 0.90).
+  #
+  # MEASURED on this box (2026-08-30): per-request decode holds flat from
+  # C5 (33-34 tok/s) to C10 (33-36 tok/s) with TTFT <0.3s — no eager-decode
+  # cliff across the full concurrency range.
+  cuda_graph_max_bs_decode: 10
+
+  # torch.compile, tuned for DSpark. The measured DFlash2 reference profile
+  # does NOT use torch.compile at all. Keep it enabled for now (it may help
+  # small-batch decode), but A/B against disabled and drop it if it shows no
+  # win — it is unvalidated on the DFlash/SM121 path and adds boot time and
+  # capture memory.
+  enable_torch_compile: true
+  torch_compile_max_bs: 4
+
+  # Two continuous decode steps per scheduler iteration (DSpark-tuned). The
+  # measured DFlash2 reference uses the default (1).
+  #
+  # MEASURED on this box (2026-08-30, same bench as chunked_prefill_size
+  # above): steps=2 beat steps=1 by ~2-3% decode tok/s at C1-C10. Keep 2.
+  num_continuous_decode_steps: 2
+
+  # Parsers must match the output formats produced by this model/template.
+  reasoning_parser: qwen3
+  tool_call_parser: qwen3_coder
+
+  # Work around SGLang multimodal CUDA-IPC failures in restricted containers.
+  # This recipe targets text-only despite the multimodal checkpoint (matching
+  # the DSpark sibling's omission of an mm input cap); unbounded image/video
+  # input is bounded by the text use case, not by a per-request limit. The
+  # RadixArk/Qwen3.8-27B-NVFP4 card notes validation on GB300, not GB10 —
+  # confirm the mm transport path on boot before serving images.
+  mm_feature_transport: cpu
+
+  # Qwen3.8 defaults to xhigh. High recovers real accuracy on hard multi-step
+  # coding/agent tasks (this recipe's target workload) at the cost of longer
+  # generations — decode tok/s is unchanged, so this is a latency trade, not
+  # a throughput one. xhigh is likely past diminishing returns; medium was
+  # the previous general-purpose compromise. Override with
+  # -o reasoning_effort=medium for latency-sensitive interactive use.
+  reasoning_effort: high
+
+command: |
+  : "${SGLANG_API_KEY:?SGLANG_API_KEY must be set}"
+  # The SGLang pair (this recipe + the DSpark sibling) gate the API key inline
+  # here and read $SGLANG_API_KEY from the ambient container env, intentionally
+  # diverging from the vLLM recipes' cluster-env convention. Do not "fix" one
+  # half of the A/B pair without the other.
+
+  # Radix/Mamba cache hit-rate reporting (observability; the measured DFlash2
+  # reference enables it). Guarded: only add the flag if this build supports it.
+  # Flags from the reference profile that were checked and deliberately NOT
+  # adopted here, with reasons:
+  #   --disable-prefill-cuda-graph  — costs prefill (TTFT) speed; add only if
+  #                                   boot fails under CUDA-graph capture.
+  #   --disable-flashinfer-autotune — trades runtime kernel speed for boot
+  #                                   repeatability; A/B before adopting.
+  #   --sleep-on-idle               — idle-CPU savings only, no throughput
+  #                                   effect; optional for quiet deployments.
+  CACHE_REPORT_FLAG=""
+  if python3 -m sglang.launch_server --help 2>&1 | grep -q -- '--enable-cache-report'; then
+    CACHE_REPORT_FLAG="--enable-cache-report"
+  fi
+
+  python3 -m sglang.launch_server \
+    --model-path {model} \
+    --served-model-name {served_model_name} \
+    --host {host} \
+    --port {port} \
+    --tp {tensor_parallel} \
+    --context-length {max_model_len} \
+    --trust-remote-code \
+    --mem-fraction-static {mem_fraction_static} \
+    --attention-backend {attention_backend} \
+    --chunked-prefill-size {chunked_prefill_size} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --mamba-ssm-dtype {mamba_ssm_dtype} \
+    --max-mamba-cache-size {max_mamba_cache_size} \
+    --mamba-radix-cache-strategy {mamba_radix_cache_strategy} \
+    --max-running-requests {max_running_requests} \
+    --speculative-algorithm {speculative_algorithm} \
+    --speculative-draft-model-path {speculative_draft_model_path} \
+    --speculative-draft-attention-backend {speculative_draft_attention_backend} \
+    --speculative-num-draft-tokens {speculative_num_draft_tokens} \
+    --speculative-draft-model-quantization {speculative_draft_model_quantization} \
+    --enable-torch-compile --torch-compile-max-bs {torch_compile_max_bs} \
+    --cuda-graph-max-bs-decode {cuda_graph_max_bs_decode} \
+    --num-continuous-decode-steps {num_continuous_decode_steps} \
+    --reasoning-parser {reasoning_parser} \
+    --tool-call-parser {tool_call_parser} \
+    $CACHE_REPORT_FLAG \
+    --sampling-defaults model \
+    --default-chat-template-kwargs '{"enable_thinking":true,"preserve_thinking":true,"reasoning_effort":"{reasoning_effort}"}' \
+    --preferred-sampling-params '{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0,"presence_penalty":0.0,"frequency_penalty":0.0}' \
+    --enable-metrics \
+    --mm-feature-transport {mm_feature_transport} \
+    --api-key "$SGLANG_API_KEY"
