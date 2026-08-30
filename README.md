@@ -1,6 +1,6 @@
 # sparkrun-recipes
 
-A collection of [sparkrun](https://sparkrun.dev) recipes for serving inference models on NVIDIA DGX Spark (128 GB unified memory) and other Blackwell-class single-GPU hosts. Each recipe is a self-contained YAML file with a known-good vLLM serving configuration.
+A collection of [sparkrun](https://sparkrun.dev) recipes for serving inference models on NVIDIA DGX Spark (128 GB unified memory) and other Blackwell-class single-GPU hosts. Each recipe is a self-contained YAML file with a known-good vLLM or SGLang serving configuration.
 
 ## Recipes
 
@@ -8,11 +8,15 @@ A collection of [sparkrun](https://sparkrun.dev) recipes for serving inference m
 |---|---|---|---|---|---|
 | [kat-coder](kat-coder-v2.5-dev-nvfp4.yaml) | KAT-Coder V2.5 Dev | 35B A3B MoE | NVFP4 | Agentic coding | 9000 |
 | [ornith](ornith-35b-fp8.yaml) | Ornith 1.0 35B + MTP | 35B MoE | FP8 E4M3 | Agentic coding (fast) | 8000 |
+| [ornith-1.5](ornith-1.5-35b-fp8.yaml) | Ornith 1.5 35B-A3B | 36B MoE | FP8 E4M3 | Agentic coding (vision + MTP) | 9000 |
 | [nemotron-omni](nemotron3-nano-omni-30b-nvfp4.yaml) | Nemotron 3 Nano Omni 30B | 30B A3B MoE | NVFP4 | Multimodal reasoning | 8000 |
 | [qwen2.5-coder](qwen2.5-coder-14b-instruct-nvfp4-anima.yaml) | Qwen2.5-Coder-14B-Instruct | 14B | NVFP4 | Autocomplete / FIM | 8100 |
 | [nemotron-embed](nemotron-3-embed-1b-nvfp4.yaml) | Nemotron 3 Embed 1B | 1.14B | NVFP4 | Text embeddings / RAG | 8000 |
+| [qwen3.8-27b](qwen3.8-27b-nvfp4.yaml) | Qwen3.8 27B + DSpark | 27B | NVFP4 | Agentic coding (SGLang) | 9000 |
+| [qwen3.8-27b-dflash](qwen3.8-27b-nvfp4-dflash.yaml) | Qwen3.8 27B + DFlash 2 | 27B | NVFP4 | Agentic coding (SGLang, fastest) | 9000 |
+| [qwen3.8-27b-fp8](qwen3.8-27b-fp8.yaml) | Qwen3.8 27B | 27B | FP8 E4M3 | Higher-quality Qwen3.8 (SGLang) | 9000 |
 
-All recipes use the [vLLM](https://docs.vllm.ai) runtime on the `eugr/spark-vllm:nightly-20260807` container.
+Recipes use either the [vLLM](https://docs.vllm.ai) runtime (on an `eugr/spark-vllm:nightly-*` container) or [SGLang](https://github.com/sgl-project/sglang) (on `lmsysorg/sglang:*`). Each recipe pins its own container tag in its `container:` field; verify the pinned version against the flags it uses.
 
 ## Usage
 
@@ -65,6 +69,17 @@ NVFP4 quantization of [Kwaipilot/KAT-Coder-V2.5-Dev](https://huggingface.co/saka
 - `qwen3` reasoning parser, `qwen3_xml` tool parser
 - License: MIT
 
+### Ornith 1.5 35B-A3B — `ornith-1.5-35b-fp8.yaml`
+
+[Ornith-1.5-35B-A3B-FP8](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-FP8) — the image-capable successor to Ornith 1.0, a 36B-A3B MoE (~3B active) on Qwen3.5 (`qwen3_5_moe`) with hybrid linear+full attention and a grafted MTP speculative-decoding sidecar. FP8 E4M3 weights (39.4 GB on disk; `visual.*` and `mtp.*` kept bf16), image+video capable via Qwen3VL (this recipe enables image only).
+
+- **SWE-bench Verified 79**, SWE-bench Pro 59.6, Terminal-Bench 2.1 (Terminus-2) 67.8, GPQA Diamond 89.2
+- MTP speculative decoding, 2 draft tokens (checkpoint ships `mtp_num_hidden_layers: 1`, but vLLM's `mtp` method proposes multiple draft tokens per autoregressive step — verified by Ornith 1.0, same MTP count, reporting mean acceptance length 2.38 with 2 tokens); FP8 KV cache (dynamic scaling — checkpoint ships no FP8 KV scales)
+- `qwen3` reasoning parser, `qwen3_xml` tool parser; sampling 0.6 / 0.95 / 20 (model-card recommendation; no penalty overrides)
+- Image input capped at 4 per prompt, video disabled via `--limit-mm-per-prompt`
+- Caveat: MTP + Qwen3VL multimodal concurrently is not exercised by the model card — validate with an image request before trusting it (see fallback ladder in the repo plan)
+- License: MIT
+
 ### Nemotron 3 Nano Omni 30B — `nemotron3-nano-omni-30b-nvfp4.yaml`
 
 [Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4](https://huggingface.co/lactroiii/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4) — a 31B Mamba2-Transformer hybrid MoE (~3B active) with integrated video, audio, image, and text understanding. The only multimodal recipe here.
@@ -86,6 +101,16 @@ NVFP4 quantization of [Kwaipilot/KAT-Coder-V2.5-Dev](https://huggingface.co/saka
 - Short context (`max_model_len 8192`) and high concurrency (`max_num_seqs 128`) tuned for short FIM requests
 - License: Apache-2.0 (base Qwen2.5-Coder-14B-Instruct)
 
+### Qwen3.8 27B — `qwen3.8-27b-nvfp4.yaml` / `qwen3.8-27b-nvfp4-dflash.yaml` / `qwen3.8-27b-fp8.yaml`
+
+[Qwen3.8-27B](https://huggingface.co/RadixArk/Qwen3.8-27B-NVFP4) on SGLang — a 27B hybrid linear+full attention model (Qwen3.5 arch, 262K context) with external speculative decoding. Three variants:
+
+- **`qwen3.8-27b-nvfp4.yaml`** — NVFP4 weights + DSpark drafter (block 7), the measured-optimum DSpark stack.
+- **`qwen3.8-27b-nvfp4-dflash.yaml`** — NVFP4 weights + DFlash 2 (block-diffusion) drafter, K=8. Benchmarked on GB10 (2026-08-30): 67 tok/s single-stream decode, 321 tok/s aggregate at C10 with flat per-request speed from C5→C10. The fastest Qwen3.8 variant.
+- **`qwen3.8-27b-fp8.yaml`** — FP8 E4M3 weights, no drafter. Higher quality ceiling than NVFP4 at lower speed.
+
+All three: FP8 E4M3 KV cache, `qwen3` reasoning parser, `qwen3_coder` tool parser, thinking on by default, `SGLANG_API_KEY` required (cluster env, same convention as `VLLM_API_KEY`). The two NVFP4 variants are an A/B pair — keep shared knobs in sync between them.
+
 ### Nemotron 3 Embed 1B — `nemotron-3-embed-1b-nvfp4.yaml`
 
 [Nemotron-3-Embed-1B-NVFP4](https://huggingface.co/nvidia/Nemotron-3-Embed-1B-NVFP4) — a 1.14B text-embedding model for multilingual retrieval/RAG, built on a Ministral-3 pruned encoder with bidirectional attention + average pooling.
@@ -100,12 +125,13 @@ NVFP4 quantization of [Kwaipilot/KAT-Coder-V2.5-Dev](https://huggingface.co/saka
 
 ## GPU memory utilization
 
-Recipes target a 128 GB DGX Spark (unified LPDDR5X). `gpu_memory_utilization` is the fraction of total memory each vLLM process reserves; on unified memory, over-reserving starves the OS and can stall weight prefetch.
+Recipes target a 128 GB DGX Spark (unified LPDDR5X). `gpu_memory_utilization` is the fraction of total memory each vLLM process reserves; on unified memory, over-reserving starves the OS and can stall weight prefetch. The SGLang recipes (qwen3.8-*) express the same concept as `mem_fraction_static` (0.70 for the dflash variant, 0.90 for the DSpark variant) and are omitted from the table below.
 
 | Recipe | gpu_memory_utilization | Weights (approx) |
 |---|---|---|
 | kat-coder | 0.65 | ~22 GB |
 | ornith | 0.60 | ~37 GB |
+| ornith-1.5 | 0.85 | ~39 GB |
 | nemotron-omni | 0.70 | ~21 GB |
 | qwen2.5-coder | 0.20 | ~11 GB |
 | nemotron-embed | 0.07 | ~1 GB |
@@ -149,3 +175,6 @@ uvx --with pandas --with matplotlib python scripts/chart_benchy.py \
 - **KAT chat-template mod**: `kat-coder` references `mods/fix-qwen3.6-chat-template`, which resolves via sparkrun's mod lookup (adjacent dir, same registry, or `@eugr` fallback). If it isn't available, `sparkrun run` will fail with the paths it tried.
 - **nemotron-omni context**: the model card's single-GPU example uses 131072; this recipe sets 262144. If you hit OOM on unified memory, lower `max_model_len` and/or `gpu_memory_utilization`.
 - **vLLM versions**: qwen2.5-coder and nemotron-embed have specific version requirements (0.23 and ≥0.25 respectively). Verify the shared container satisfies the model you're serving.
+- **ornith-1.5 MTP draft tokens**: `--speculative-config` requests **2** draft tokens (exposed as the `num_speculative_tokens` default — override with `-o num_speculative_tokens=3`). The checkpoint ships `mtp_num_hidden_layers: 1`, but that does NOT cap `num_speculative_tokens` — vLLM's `mtp` method proposes multiple drafts per autoregressive step from the single layer (Ornith 1.0 ships the same count and reports mean acceptance length 2.38 with 2 tokens). 2 matches the direct predecessor; tune up/down after profiling. If boot fails under MTP, follow this ladder: drop `--speculative-config` (keep vision) → drop `--async-scheduling` (scheduler/CUDA-graph errors) → set `--limit-mm-per-prompt '{"image":0,"video":0}'` (go text-only) → drop `--enable-chunked-prefill`.
+- **ornith-1.5 chat-template kwargs**: `--default-chat-template-kwargs '{"enable_thinking": true, "preserve_thinking": true}'` is copied from sibling `qwen3_5_moe` recipes; Ornith-1.5 ships a *modified* chat template, so the kwargs may not be consumed. If startup logs warn "chat template kwargs were provided but not used", drop the flag (the shipped template does the right thing unaided) — harmless but dead weight.
+- **ornith-1.5 vision via vLLM**: neither the model card's vLLM example nor the third-party DGX-Spark recipe enables vision (both are text-only). This recipe enables image input via `--limit-mm-per-prompt` (video disabled). Validate an image request before trusting the vision+MTP combination; see the fallback ladder above.
